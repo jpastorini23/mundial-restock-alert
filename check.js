@@ -45,7 +45,7 @@ function decodeEntities(str) {
   return str.replace(/&(?:aacute|eacute|iacute|oacute|uacute|Aacute|Eacute|Iacute|Oacute|Uacute|ntilde|Ntilde|amp|quot|apos|nbsp);/g, (m) => HTML_ENTITIES[m] || m);
 }
 
-async function fetchPage() {
+async function fetchPageOnce() {
   const res = await fetch(URL, {
     headers: {
       'User-Agent':
@@ -53,9 +53,21 @@ async function fetchPage() {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
     },
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${URL}`);
   return res.text();
+}
+
+async function fetchPage() {
+  // Retry once on transient errors (network blip, brief 5xx).
+  try {
+    return await fetchPageOnce();
+  } catch (err) {
+    console.warn(`First fetch failed (${err.message}). Retrying in 2s...`);
+    await new Promise((r) => setTimeout(r, 2000));
+    return await fetchPageOnce();
+  }
 }
 
 function parseStock(html) {
@@ -115,9 +127,7 @@ async function readState() {
     const content = await readFile(STATE_FILE, 'utf8');
     return JSON.parse(content);
   } catch {
-    const initial = Object.fromEntries(MONITORED_ITEMS.map((i) => [i.id, 'AVISAME']));
-    initial.lastCheck = null;
-    return initial;
+    return Object.fromEntries(MONITORED_ITEMS.map((i) => [i.id, 'AVISAME']));
   }
 }
 
@@ -188,8 +198,8 @@ async function main() {
     console.log('No AVISAME → CARRITO transitions. No alert sent.');
   }
 
-  const newState = { ...current, lastCheck: new Date().toISOString() };
-  await writeState(newState);
+  // Only write stock fields — no timestamp — so the file only changes (and gets committed) when stock actually changes.
+  await writeState(current);
 }
 
 main().catch((err) => {
